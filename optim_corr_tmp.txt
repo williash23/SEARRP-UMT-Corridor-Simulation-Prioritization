@@ -1,0 +1,269 @@
+###############################################################################
+#  Run optimization with 'Prioritizr' package for vertebrate species ranges.
+#  March 1, 2018.
+#  Script to generate optimize selected land units for protection of a variety of input 
+#   conservation features.
+#  Sara Williams
+###############################################################################
+
+
+
+# =============================================================================
+#  Notes on model implementation, assumptions, and areas for improvement.
+# =============================================================================
+
+	# ----------------------
+	#  Inputs:
+	#   1. Conservation *features*. These may be rasters or spatial polygons. I am thinking I will use rasters, where 
+	#   the extent is the entirety of Sabah, and each cell value is a 1 or 0, for if the spp range covers that cell or not. These 
+	#   will take the format of a RasterStack object with nLayers = number of conservation features.
+	#   2. Planning units. This may be raster or polygon. If raster, then each pixel value is the cost information. If polygon, 
+	#   than should have 3 variables: cost, locked_in, locked_out.
+
+	
+	
+# =============================================================================
+#  Load packages.
+# =============================================================================
+library(sf)
+library(sp)
+library(raster)
+library(dplyr)
+library(tidyr)
+# install.packages("C:/gurobi751/win64/R/gurobi_7.5-1.zip", repos = NULL)
+library(gurobi)
+#  devtools::install_github("prioritizr/priortizr") #### Now unecessary as there is an official
+#   CRAN version. 
+library(prioritizr)
+library(ggplot2)
+
+
+
+# =============================================================================
+#  Load data.
+# =============================================================================		
+
+	# ----------------------
+	#  Boundaries
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/border_sabah_sf.Rdata")
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/border_sarawak_sf.Rdata")
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/border_kali_sf.Rdata")
+	
+	# ----------------------
+	#  "Locked in" already existing protected areas.
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/ssk_pa_near_sf.Rdata")
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/ssk_pa_near_sf_clust_1k.Rdata")
+	pa_b_sf <- st_buffer(ssk_pa_near_sf, 1) %>%
+		mutate(locked_out = ifelse(locked_in_val == 1, 1, 0))
+	#locked_out_sf <- st_intersection(pa_b_sf, border_sabah_sf) 
+	#locked_out_sf_u <- st_union(locked_out_sf)
+	#locked_out <- as(locked_out_sf_u, 'Spatial')
+	
+	pa_b_sf <- st_buffer(ssk_pa_near_sf, 1) %>%
+		mutate(locked_in = ifelse(locked_in_val == 1, 1, 0))
+	#locked_in_sf <- st_intersection(pa_b_sf, border_sabah_sf) 
+	#locked_in <- as(locked_in_sf, 'Spatial')
+	#locked_in_h <- as.integer(sum(st_area(locked_in_sf)) * 0.0001)
+	
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/acd_agg_sf_for.Rdata")
+	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/processed_spat_data/trans_crop_proj/for_res_rt_sf.Rdata")
+
+	# ----------------------
+	#  Load study area grid that holds planning units.
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf.Rdata")
+	
+	
+# =============================================================================
+#  Define conservation features - all species ranges.
+# =============================================================================
+
+	# ----------------------
+	#  Load species ranges that have been replicated by weighting.
+	prior_vert_feat_r <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/prior_vert_feat_r.grd")
+	prior_fly_feat_r <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/prior_fly_feat_r.grd")	
+	prior_plant_feat_r <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/prior_plant_feat_r.grd")
+	#corr_feat_r <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/corr_out_r.grd")
+	
+	acd_feat_r_tmp <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/acd_feat_in.grd")
+	x_min <- acd_feat_r_tmp@data@min
+	x_max <- acd_feat_r_tmp@data@max
+	acd_feat_r <- raster::calc(acd_feat_r_tmp, range01)
+	all_feat_in <- stack(prior_vert_feat_r, prior_fly_feat_r, prior_plant_feat_r, corr_feat_r, acd_feat_r)
+	
+	
+	
+# =============================================================================
+#  Define planning units.
+# =============================================================================
+
+	# ----------------------
+	#  Set up area of each planning unit as cost.
+	const_cost_h <- 500
+
+	pu_sf_tmp <- sa_grid_sf %>%
+		mutate(area_tmp = st_area(.) * 0.0001) %>%
+		separate(area_tmp, sep = " ", c("area_h_tmp"), drop = TRUE) 
+	pu_sf_tmp$area_h_tmp <- as.numeric(pu_sf_tmp$area_h_tmp)
+	pu_sf <- pu_sf_tmp %>%
+		mutate(area_h = ifelse(area_h_tmp < 1, 1, area_h_tmp)) %>%
+		mutate(const_cost = const_cost_h) %>%
+		dplyr::select(-area_h_tmp) %>%
+		dplyr::filter(area_h > 100)
+	pu_in <- as(pu_sf, "Spatial")
+
+
+	
+
+# =============================================================================
+#  Parameters for loop to solve prioritized connectivity iteratively.
+# =============================================================================
+
+	# ----------------------
+	#  Average planning unit area
+	pu_area_h <- 500
+	pu_area_sq_m <- 5000000
+	
+	# ----------------------
+	#  Total area allocated
+	tot_h <- 1000000
+	tot_sq_m <- 2000000000
+
+	# ----------------------
+	#  Number of iterations to reach total area
+	niter_max <- tot_h/pu_area_h
+	
+	# ----------------------
+	#  Number of neighbors for each iteration
+	n_neigh <- 2
+	
+	# ----------------------
+	#  Number of neighbors for initial problem.
+	n_neigh_init <- 1
+
+	# ----------------------
+	#  Adjustment area for adding wiggle room to cover area increase.
+	wiggle_room <- 100
+	
+	# ----------------------
+	#  Area of coverage for initial problem.
+	area_init <- pu_area_h * n_neigh_init + wiggle_room
+	
+	# ----------------------
+	#  Area of increase for each iteration
+	area_inc <- 0.005
+
+	# ----------------------
+	#  Targets for for initial problems
+	init_target <- 0.005
+	
+	
+	
+
+# =============================================================================
+#  Initiate problem and solve first iteration
+# =============================================================================
+
+	# ----------------------
+	#  Set up problem for vertebrates.
+	p_all <- problem(x = pu_in, features = all_feat_in, cost_column = "area_h") %>%
+		#add_max_cover_objective(300000) %>%
+		#add_max_utility_objective(300000) %>%
+		add_max_features_objective(300000) %>%
+		add_relative_targets(0.3) %>%
+		#add_boundary_penalties(penalty = 0.01) %>%
+		add_neighbor_constraints(2) %>%
+		add_locked_in_constraints(locked_in) %>%
+		add_contiguity_constraints() %>%
+		add_binary_decisions() %>%
+		add_gurobi_solver()
+		
+	# ----------------------
+	#  Solve vertebrates problem.
+	s_all <- solve(p_all)
+	s_all_sf <- st_as_sf(s_all) %>%
+		dplyr::filter(solution_1 == 1)
+	all_area_h <- as.integer(sum(st_area(s_all_sf)) * 0.0001)
+	
+	#save(s_all_sf, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/s_all_sf.Rdata")
+	
+	
+	
+	# ----------------------
+	#  Save plot to see planning units selected over time.
+	 solution_p <- ggplot() +
+		geom_sf(data = border_sabah_sf, colour = "grey50", fill = "grey50", alpha = 0.7) +
+		geom_sf(data = border_sarawak_sf, colour = "grey50", fill = "grey80") +
+		geom_sf(data = border_kali_sf, colour = "grey50", fill = "grey80") +
+		geom_sf(data = acd_agg_sf_for, colour = "#1B792F", fill = "#1B792F", alpha = 0.3) +
+		geom_sf(data = ssk_pa_near_sf_clust_1k, fill = "darkorange2", colour = "grey50", alpha = 0.7) +
+		geom_sf(data = s_all_sf,  fill = "darkred", alpha = 0.7) +
+		coord_sf(crs = st_crs(32650)) +
+		xlab("Latitude") +
+		ylab("Longitude") +
+		xlim(315000, 755000) +
+		ylim(455000, 815000) +
+		theme_bw()
+	solution_p
+
+	
+	
+	
+		st_erase = function(x, y) st_difference(x, st_union(st_combine(y)))
+	
+	
+	# ----------------------
+		#  Set up initial problem.
+		p_corr <- problem(x = pu_in, features = corr_in_r, cost_column = "const_cost") %>%
+			add_min_set_objective() %>%
+			#add_max_cover_objective(100000) %>%
+			add_relative_targets(0.99) %>%
+			#add_boundary_penalties(penalty = 500, edge_factor = 0.5) %>%
+			#add_neighbor_constraints(n_neigh) %>%
+			#add_contiguity_constraints() %>%
+			add_binary_decisions() %>%
+			add_gurobi_solver()
+
+		# ----------------------
+		#  Solve initial problem.
+		s_corr <- solve(p_corr)
+		s_corr_sf <- st_as_sf(s_corr) %>%
+			dplyr::filter(solution_1 == 1) %>%
+			mutate(locked_in = 1) %>%
+			mutate(select_order = 1) %>%
+			st_erase(st_buffer(ssk_pa_near_sf, 1500))
+		cur_area_h <- as.integer(sum(st_area(s_corr_sf)) * 0.0001)
+		
+		# ----------------------
+		#  Make solution an sp object.
+		s_corr_sp <- as(s_corr_sf, "Spatial")
+
+		
+		
+		# ----------------------
+		#  Save plot to see planning units selected over time.
+		 solution_p <- ggplot() +
+			geom_sf(data = border_sabah_sf, colour = "grey50", fill = "grey50", alpha = 0.7) +
+			geom_sf(data = border_sarawak_sf, colour = "grey50", fill = "grey80") +
+			geom_sf(data = border_kali_sf, colour = "grey50", fill = "grey80") +
+			#geom_sf(data = acd_agg_sf_for, colour = "#1B792F", fill = "#1B792F", alpha = 0.3) +
+			geom_sf(data = pa_in_b, fill = "darkorange2", colour = "grey50", alpha = 0.7) +
+			geom_sf(data = s_corr_sf,  fill = "darkred", alpha = 0.7) +
+			coord_sf(crs = st_crs(32650)) +
+			xlab("Latitude") +
+			ylab("Longitude") +
+			xlim(315000, 755000) +
+			ylim(455000, 815000) +
+			theme_bw()
+		solution_p
+
+	
+		r_mat <- matrix(0, nrow(acd_feat_r), ncol(acd_feat_r))
+		r_template <- raster(r_mat)
+		extent(r_template) <- extent(acd_feat_r)
+		projection(r_template) <- CRS("+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0") 
+
+		s_corr_r <- rasterize(s_corr_sp, r_template, field = s_corr_sp$locked_in)
+	
+		corr_feat_r
+		# ----------------------
+	
