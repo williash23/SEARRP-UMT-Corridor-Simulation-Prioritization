@@ -72,9 +72,8 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Load study area grid that holds planning units for connectivity optimization.
-	load(file = "C:/Users/saraw/Desktop/5_5_18/sa_grid.Rdata")
-	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf_25.Rdata")
-	
+	load(fille = "C:/Users/saraw/Desktop/planning_unit_grids/sw_sabah_grid.Rdata")
+
 	# ----------------------
 	#  Load forest area.
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/acd_agg_sf_for.Rdata")
@@ -262,7 +261,7 @@ options(digits = 10)
 			#add_min_set_objective() %>%
 			add_max_cover_objective(init_area) %>%
 			#add_relative_targets(init_target) %>%
-			add_boundary_penalties(0.00000001, 0.5) %>%
+			add_boundary_penalties(0.0000002, 0.5) %>%
 			#add_neighbor_constraints(n_neigh_init) %>%
 			#add_contiguity_constraints() %>%
 			add_binary_decisions() %>%
@@ -290,7 +289,7 @@ options(digits = 10)
 		# ----------------------
 		#  Constrain input raster for the next iteration to the same general area as the boundary
 		#   generated above.
-		local_r <- raster::mask(conn_in, bound_sp)
+		local_r <- raster::mask(moves_in, bound_sp)
 		conn_in_upd_1_01 <- local_r
 		
 		# ----------------------
@@ -337,9 +336,9 @@ options(digits = 10)
 				# ----------------------
 				#  Set up problem to add planning units to first planning unit selected.
 				p <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "area_h") %>%
-					#add_max_features_objective(cur_area_h + (pu_area_h * 10) + wiggle_room) %>%
-					add_min_set_objective() %>%
-					add_boundary_penalties(0.000000001, 0.5) %>%
+					add_max_features_objective(cur_area_h + (pu_area_h * 10) + wiggle_room) %>%
+					#add_min_set_objective() %>%
+					add_boundary_penalties(0.0000002, 0.5) %>%
 					add_locked_in_constraints(locked_in) %>%
 					add_relative_targets(0.05*(i-1)) %>%
 					add_binary_decisions() %>%
@@ -435,6 +434,8 @@ options(digits = 10)
 				diff_pa_tst <- ifelse(isEmpty(setdiff(end_pa_id[[i]], start_pa_id[[i]])), 0, 
 				setdiff(end_pa_id[[i]], start_pa_id[[i]])) 
 				diff_pa_tst[is.nan(diff_pa_tst)] <- 0
+				
+				}
 				
 				if(any(diff_pa_tst > 0) == TRUE| nrow(tmp4) == nrow(tmp1)) {break}
 				}

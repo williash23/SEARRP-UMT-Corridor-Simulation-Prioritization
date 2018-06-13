@@ -64,11 +64,11 @@ library(rasterVis)
 	#  Perceptual range of spp in meters.
 	#   This will be a vector of length = nscen
 	# percep_range <- c(910, 2730) # meters
-	percep_range <- c(500) # meters
+	percep_range <- c(51000) # meters
 	
 	# ----------------------
 	#  Step length in meters, which should be less than perceptual range.
-	step_l <- c(250)
+	step_l <- c(500)
 
 	# ----------------------
 	#  Permeability: resistance value for each cell based on forest cover quality (ACD value, or
@@ -79,7 +79,7 @@ library(rasterVis)
 	# 3 = ocean
 	# 4 = PA (assumption highest quality forest)
 	resist_l <- c(0.4, 0.1, 0.25, 0.50, 0)
-	resist_h <- c(0.98, 0.05, 0.75, 0.50, 0.0)
+	resist_h <- c(0.95, 0.25, 0.75, 0.50, 0.0)
 	#resist_val <- as.data.frame(cbind(resist_l, resist_h))
 	resist_val <- as.data.frame(resist_h)
 	
@@ -90,18 +90,9 @@ library(rasterVis)
 # =============================================================================
 
 	# ----------------------
-	#  Boundaries
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/processed_spat_data/trans_crop_proj/border_sabah_d.Rdata")
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/processed_spat_data/trans_crop_proj/border_sarawak_d.Rdata")
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/processed_spat_data/trans_crop_proj/border_kali_d.Rdata")
-	load("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/border_sabah_sf.Rdata")
-	border_sabah_sp  <- as(border_sabah_sf, "Spatial")
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/main_sabah_sf.Rdata")
 	main_sabah_sp <- as(main_sabah_sf, "Spatial")
 	
-	# ----------------------
-	# Forest cover
-	#for_cov <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/for_cov_conn.grd")
 	# ----------------------
 	# Forest cover - larger buffer size
 	for_cov <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/for_cov_conn_lg.grd")
