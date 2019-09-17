@@ -64,7 +64,7 @@ library(rasterVis)
 	#  Perceptual range of spp in meters.
 	#   This will be a vector of length = nscen
 	# percep_range <- c(910, 2730) # meters
-	percep_range <- c(51000) # meters
+	percep_range <- c(1000) # meters
 	
 	# ----------------------
 	#  Step length in meters, which should be less than perceptual range.
@@ -76,10 +76,10 @@ library(rasterVis)
 	# 0 = non-forest
 	# 1 = forest
 	# 2 = roads
-	# 3 = ocean
+	# 3 = ocean >>> Becomes NA
 	# 4 = PA (assumption highest quality forest)
-	resist_l <- c(0.4, 0.1, 0.25, 0.50, 0)
-	resist_h <- c(0.95, 0.25, 0.75, 0.50, 0.0)
+	#resist_l <- c(0.4, 0.1, 0.25, 0.50, 0)
+	resist_h <- c(0.6, 0.05, 0.75, 0.01)
 	#resist_val <- as.data.frame(cbind(resist_l, resist_h))
 	resist_val <- as.data.frame(resist_h)
 	
@@ -95,8 +95,20 @@ library(rasterVis)
 	
 	# ----------------------
 	# Forest cover - larger buffer size
-	for_cov <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/for_cov_conn_lg.grd")
-	# 0-1
+	for_cov_tmp <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/for_cov_conn_lg.grd")
+	for_cov_tmp[for_cov_tmp == 3] <- NA
+	rc_val <- c(0, 1,
+		1, 2,
+		2, 3,
+		4, 4)
+	rc_mat <- matrix(rc_val, 
+		ncol = 2, 
+		byrow = TRUE)
+	for_cov <- raster::reclassify(for_cov_tmp, rc_mat)
+	# 1 = non-forest
+	# 2 = forest
+	# 3 = roads
+	# 4 = PA (assumption highest quality forest)
 	
 	# ----------------------
 	#  Exiting protected areas, clustered (within 5m of each other become single PA)
@@ -177,19 +189,14 @@ library(rasterVis)
 	#  Portion to generate resistance matrix.
 	#   Nested loops run over every possible combination of parameters.
 	
-	for(i in 1:length(turn_conc)){
-		for(j in 1:length(percep_range)){
-			for(k in 1:length(step_l)){
-				for(q in 1:ncol(resist_val)){
-		
+
 				# ----------------------
 				#  Reclassify forest cover into a resistance map using values specified for 
 				#   each spp permeability.
-				rc_val_for <- c(0, resist_val[1,q],
-					1, resist_val[2,q],
-					2, resist_val[3,q],
-					3, resist_val[4,q], 
-					4, resist_val[5,q])
+				rc_val_for <- c(1, resist_val[1,1],
+					2, resist_val[2,1],
+					3, resist_val[3,1],
+					4, resist_val[4,1])
 				rc_mat_for <- matrix(rc_val_for, 
 					ncol = 2, 
 					byrow = TRUE)
@@ -202,9 +209,16 @@ library(rasterVis)
 					
 						# ----------------------
 						#  Run animal movement simulations for each spp and store output in a list.
-						sim_out_list <- list()
-						for(w in 1:nsim){
-							
+						#sim_out_list <- list()
+						#for(w in 1:nsim){
+					
+						# ----------------------
+						#  Initiate cluster for parallel processing.
+						cl <- makeCluster(detectCores()-1)
+						registerDoParallel(cl)
+	
+					move_sim_conn_locs <- foreach(w = 1:nsim,  .packages=c("dplyr", "sf", "sp", "raster", "SiMRiv")) %dopar% {
+			
 							# ----------------------
 							#  Randomly select starting location for individuals, which is constrained to protected areas 
 							#   and the spp range. 
@@ -213,14 +227,12 @@ library(rasterVis)
 							init_loc_m <- as.matrix(init_loc_df[,1:2])
 
 							# ----------------------
-							#  Use functions from SiMRiv packge to generate simulated paths of CRW for each individual.
-							#  Generate the spp' CRW using specified parameters.
-							corr_rw <- species(state.CRW(turn_conc[i]) * percep_range[j] + step_l[k])
+							#  Generate the CRW using specified parameters.
+							spp_crw <- SiMRiv::species(state(turn_conc, perceptualRange("cir", percep_range), step_l, "CorrelatedRW"))
 							
 							# ----------------------
-							#  Simulate each individual movement path from that spp' CRW, specified number of steps, its 
-							#   random starting location, and permemability.
-							sim <- simulate(corr_rw, nstep, resist = resist, coords = c(init_loc_m[1], init_loc_m[2]))
+							#  Simulate a single movement path from CRW model
+							sim <- SiMRiv::simulate(spp_crw, nstep, resist = resist, coords = c(init_loc_m[1], init_loc_m[2]))
 
 							# ----------------------			
 							#   Convert each simulated path to data frame then to an sf object.
@@ -228,14 +240,42 @@ library(rasterVis)
 							colnames(sim_move_df) =  c("x", "y")
 							coordinates(sim_move_df) = ~ x + y
 							crs(sim_move_df) <- CRS("+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0")
-							sim_move_sf_tmp <- st_as_sf(sim_move_df)
+							#sim_move_sf_tmp <- st_as_sf(sim_move_df)
 
 							# ----------------------			
 							#   Format column names of simulated movement path sf object.			
-							sim_move_sf <- sim_move_sf_tmp %>%
+							sim_move_sf_tmp <- st_as_sf(sim_move_df) %>%
 								mutate(sim_path = w) %>%
 								mutate(step_num = 1:n()) 
+									
+									first_loc <-  sim_move_sf_tmp %>%
+										slice(1)
+									first_pa <- as.numeric(raster::extract(pa_r, as(first_loc, "Spatial")))
+									all_pa <- raster::extract(pa_r, as(sim_move_sf_tmp, "Spatial"))
+									
+									sim_move_sf_tmp2 <- cbind(sim_move_sf_tmp, all_pa) %>%
+										mutate(sim_path = w) %>%
+										mutate(step_num = 1:n()) %>%
+										mutate(start_pa = first_pa) 
+									sim_move_sf_tmp2[is.na(sim_move_sf_tmp2)] <- first_pa
+									
+									sim_move_df_tmp <- sim_move_sf_tmp2 %>%
+										rowwise() %>%
+										mutate(cont_path = ifelse(all_pa == start_pa, 1, 0)) %>%
+										as.data.frame() 
+							
+									end_step_tmp <- which(sim_move_df_tmp$cont_path == 0)[1]
+									if(is.na(end_step_tmp)){
+										end_step <- nstep} else{
+											end_step <- end_step_tmp
+											}
+									
+									# ----------------------
+									#  Select only up to the last step for dispersers ending location
+									sim_move_df_fin <- sim_move_df_tmp[1:end_step,]
+									sim_move_sf <- st_as_sf(sim_move_df_fin, sf_column_name = "geometry") 
 								
+							
 							# ----------------------			
 							#  Assign simulated movement path sf object to specific name for each spp.
 							nam1 <- paste("sim_move_sf", "crw", w, sep = "_") 
@@ -246,6 +286,8 @@ library(rasterVis)
 							sim_out_list[[w]] <- as.name(nam1)
 							}
 
+							
+							
 					# ----------------------			
 					#  Bind the list of simulated paths together to make a collection of total = nsim paths of 
 					#   animal movement for each spp.
@@ -311,7 +353,7 @@ library(rasterVis)
 	# writeRaster(moves_in, "C:/Users/saraw/Documents/SEARRP_Analyses/move_sim/moves_in.grd")
 	
 	# ----------------------	
-	#  Smooth using a focal window
+	#  Smooth using a focal window if desired
 	moves_sm <- focal(all_sim_move_sum_m,  w = matrix(1, 3, 3))
 	
 	# ----------------------	

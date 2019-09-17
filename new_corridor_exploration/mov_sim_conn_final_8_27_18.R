@@ -1,0 +1,367 @@
+###############################################################################
+#  Connectivity through movement simulation for bookend scenarios.
+#  January 19, 2018
+#  Script to generate simulated movement paths for "bookend" spp, incorporating landscape
+#   characteristics, and evaluating probability of cell use as a measure of connectivity.
+#  Sara Williams
+###############################################################################
+
+
+
+# =============================================================================
+#  Notes on model implementation, assumptions, and areas for improvement.
+# =============================================================================
+
+	# ----------------------
+	#  Initial locations (where an animal starts) is constrained to a protected area 
+	
+	# ----------------------
+	#  Barriers (e.g., main paved roads) incorporated with relatively high resistance. Integrated 
+	#   within forest cover and resistance layer.
+
+
+	# ----------------------
+	#  Scenarios:
+	#   All combinations of maximum and minimum of 4 parameters:
+	#   1. Directional persistence: low, high 
+	#   2. Step length: short, long
+	#   3. Permeability: resistance low, resistance high
+	#   4. Perceptual range: short, long
+
+
+
+# =============================================================================
+#  Load packages.
+# =============================================================================
+library(sf)
+library(sp)
+library(raster)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+library(SiMRiv)
+#library(rasterVis)
+library(doParallel)
+
+setwd("C:/Users/saraw/Documents/Prioritization/")
+
+
+
+# =============================================================================
+#  Specify parameters for simulations and CRW
+# =============================================================================
+
+	# ----------------------
+	#  Number of simulations, individuals, and steps per individual
+	nsim <- 1000
+	nrep <- 100
+	ni <- 1
+	nstep <- 250
+
+	# ----------------------
+	#  Concentration of turning angles between steps (i.e., directional persistence), which
+	#   ranges from 0 to 1; 1 = straight line (most persistent).
+	#   This will be a vector of length = nscen
+	turn_conc <- c(0.96)
+	
+	# ----------------------
+	#  Perceptual range of spp in meters.
+	#   This will be a vector of length = nscen
+	percep_range <- c(1500) # meters
+	
+	# ----------------------
+	#  Step length in meters, which should be less than perceptual range.
+	step_l <- 500
+
+	
+	
+# =============================================================================
+#  Load base layer input data.
+# =============================================================================
+
+	# ----------------------
+	load(file = "study_area_boundaries_and_pas/main_sabah_sf.Rdata")
+	main_sabah_sp <- as(main_sabah_sf, "Spatial")
+	
+	# ----------------------
+	# Forest cover - larger buffer size
+	for_cov <- raster("study_area_cover/ext_for_cov_rds.grd")
+	
+	# ----------------------
+	#  Exiting protected areas, clustered (within 5m of each other become single PA)
+	load(file = "conn_move_sim/pa_sp_move_sim.Rdata")
+	load(file = "conn_move_sim/pa_sf_move_sim.Rdata")
+	load(file = "conn_move_sim/pa_sp_smooth_move_sim.Rdata")
+	
+	
+	
+# =============================================================================
+#  Create empty object for storage of loop outputs.
+# =============================================================================
+	
+	# ----------------------
+	#  Create raster following template of study area (cell values are empty)
+	r_mat <- matrix(0, nrow(for_cov), ncol(for_cov))
+	r_template <- raster(r_mat)
+	extent(r_template) <- extent(for_cov)
+	projection(r_template) <- CRS("+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0") 
+
+
+	
+# =============================================================================
+#  Function to normalize raster to 0 to 1 scale.
+# =============================================================================
+	
+	# ----------------------	
+	#  Normalize to 0 to 1 scale.
+	range01 <- function(x){(x-x_min)/(x_max - x_min)}
+	#  Must always also set up min and max for each raster before using function, e.g.,:
+	# x_min <- move_smooth@data@min
+	# x_max <-move_smooth@data@max
+	
+	
+
+# =============================================================================
+#  Function for calculation of relative probability of initial location.
+# =============================================================================
+	
+	# ----------------------
+	# Function for use in selecting initial location of individual.
+	probsel <- function(probrast, ni){
+		x <- getValues(probrast)
+		x[is.na(x)] <- 0
+		vec_cells <- seq(1:length(probrast))
+		samp <- sample(vec_cells,  ni, replace = F, prob=x)
+		samprast <- raster(probrast)
+		samprast[samp] <- 1 
+		samp_pts <- rasterToPoints(samprast, fun = function(x){x > 0})
+		samp_pts <- SpatialPoints(samp_pts)
+		crs(samp_pts) <- CRS("+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0")
+		return(samp_pts)
+		}
+
+	# ----------------------
+	#  Rasterize existing protected areas according to this raster template.
+	pa_sp <- pa_sp_move_sim
+	pa_r_tmp <- rasterize(pa_sp, r_template, field = pa_sp@data$size)
+	pa_r <- mask(pa_r_tmp, pa_sp_smooth_move_sim, inverse = TRUE)
+	
+	# ----------------------
+	#  Assign relative probability of initial occurrence to each grid cell from relative predicted 
+	#   density using function assigned above (probsel()) in matrix format.
+	#  Initial occurrence only from within protected areas, probability based on size.
+	probrast <- pa_r/sum(getValues(pa_r), na.rm = T)
+	probrast <- raster::crop(probrast, extent(231556, 751756, 400000, 783428))
+	
+	
+	
+# =============================================================================
+#  Set up resistance matrix.
+# =============================================================================
+
+	# ----------------------
+	#  Permeability: 
+	resist_l <- c(0.75, 0.5, 0.3, 0.05, 0.05, 0.05, 0.05, 0.05, 0.5)
+	resist_val <- as.data.frame(resist_l)
+	#  Forest cover values:
+	# NA - No data
+	# 1 - 0 to 40 MT ACD/Non-forest Gaveau
+	# 2  - 41 to 80 MT ACD/Regrowth forest Gaveau
+	# 3 - 81 to 120 MT ACD/Logged forest Gaveau
+	# 4 - 121 to 160 MT ACD
+	# 5 - 161 to 200 MT ACD/Intact forest Gaveau
+	# 6 - 201 to 240 MT ACD
+	# 7 - 241 to 280 MT ACD
+	# 8 - 281+ MT ACD
+	# 9 - Roads
+	
+	
+	# ----------------------
+	#  Reclassify forest cover into a resistance map using values specified for 
+	#   each spp permeability.
+	rc_val_for <- c(1, resist_val[1,1],
+		2, resist_val[2,1],
+		3, resist_val[3,1],
+		4, resist_val[4,1],
+		5, resist_val[5,1],
+		6, resist_val[6,1],
+		7, resist_val[7,1],
+		8, resist_val[8,1], 
+		9, resist_val[9,1])
+		rc_mat_for <- matrix(rc_val_for, 
+		ncol = 2, 
+		byrow = TRUE)
+	resist <- raster::reclassify(for_cov, rc_mat_for)
+
+	
+# =============================================================================
+#  Run simulation.
+# =============================================================================
+
+	# ----------------------
+	#  Initiate cluster for parallel processing.
+	cl <- makeCluster(3)
+	registerDoParallel(cl)
+
+	# ----------------------
+	#  Initiatialize stack to hold output
+	out_stack_ls <- foreach(q = 1:nrep, .errorhandling="pass", .packages=c("dplyr", "sf", "sp", "raster", "SiMRiv", "foreach", "doParallel")) %dopar% {
+		
+		move_sim_paths <- foreach(w = 1:nsim, .errorhandling="pass", .packages=c("dplyr", "sf", "sp", "raster", "SiMRiv")) %dopar% {
+			
+			# ----------------------
+			#  Randomly select starting location for individuals, which is constrained to protected areas 
+			#   and the spp range. 
+			init_loc <- probsel(probrast, ni)
+			init_loc_df <- as.data.frame(init_loc) 
+			init_loc_m <- as.matrix(init_loc_df[,1:2])
+
+			# ----------------------
+			#  Generate the CRW using specified parameters.
+			spp_crw <- SiMRiv::species(state(turn_conc, perceptualRange("cir", percep_range), step_l, "CorrelatedRW"))
+
+			# ----------------------
+			#  Simulate a single movement path from CRW model
+			sim <- SiMRiv::simulate(spp_crw, nstep, resist = resist, coords = c(init_loc_m[1], init_loc_m[2]))
+
+			# ----------------------			
+			#   Convert each simulated path to data frame then to an sf object.
+			sim_move_df <- as.data.frame(sim[,1:2])
+			colnames(sim_move_df) =  c("x", "y")
+			coordinates(sim_move_df) = ~ x + y
+			crs(sim_move_df) <- CRS("+proj=utm +zone=50 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0")
+			
+			# ----------------------			
+			#   Format column names of simulated movement path sf object.			
+			sim_move_sf_tmp <- st_as_sf(sim_move_df) %>%
+				mutate(sim_path = w) %>%
+				mutate(step_num = 1:n()) 
+
+			first_loc <- sim_move_sf_tmp %>%
+				slice(1)
+			first_pa <- as.numeric(raster::extract(pa_r, as(first_loc, "Spatial")))
+			all_pa <- raster::extract(pa_r, as(sim_move_sf_tmp, "Spatial"))
+			
+			sim_move_sf_tmp2 <- cbind(sim_move_sf_tmp, all_pa) %>%
+				mutate(sim_path = w) %>%
+				mutate(step_num = 1:n()) %>%
+				mutate(start_pa = first_pa) 
+			sim_move_sf_tmp2[is.na(sim_move_sf_tmp2)] <- first_pa
+			
+			sim_move_df_tmp <- sim_move_sf_tmp2 %>%
+				rowwise() %>%
+				mutate(cont_path = ifelse(all_pa == start_pa, 1, 0)) %>%
+				as.data.frame() 
+			
+			end_step_tmp <- which(sim_move_df_tmp$cont_path == 0)[1]
+			
+			if(is.na(end_step_tmp)){
+				end_step <- nstep}else{
+					end_step <- end_step_tmp
+					}
+			
+				# ----------------------
+				#  Select only the last step for dispersers ending location
+				sim_move_df_fin <- sim_move_df_tmp[1:end_step,]
+				last_loc_n <- nrow(sim_move_df_fin)
+				last_loc <- sim_move_df_fin[last_loc_n,]
+				stayed <- ifelse(last_loc$start_pa - last_loc$all_pa != 0, 5, 0)
+				
+				if(stayed < 5){
+					sim_move_sf <- NA}else{
+						sim_move_sf <- st_as_sf(sim_move_df_fin, sf_column_name = "geometry")
+						st_crs(sim_move_sf) = 32650
+						}
+				
+			return(sim_move_sf)
+			}	
+
+		# ----------------------			
+		#  Remove "null" paths that only stayed within the same PA	
+		good_paths <- move_sim_paths[!is.na(move_sim_paths)]
+		length_idx <- length(good_paths)
+		
+		if(length_idx  == 0){
+			sim_move_r <- r_template
+			sim_move_r[] <- 0 } else {
+				
+				# ----------------------			
+				#  Bind the list of simulated paths together to make a collection of total = nsim paths of 
+				#   animal movement for each spp.
+				paths_bind <- do.call(rbind, good_paths)
+				paths_bind_sp <- as(paths_bind, "Spatial")
+				
+				# ----------------------	
+				#  Tabulate the number of steps (i.e., point locations from simulated movement path) that occur
+				#   in each grid cell as a measure of each cell's use by the spp.
+				sim_move_r <- r_template
+				tab <- table(cellFromXY(sim_move_r, paths_bind_sp))
+				sim_move_r[as.numeric(names(tab))] <- tab
+				}
+	
+		return(sim_move_r)
+		}
+
+	first_el <- sapply(out_stack_ls, function (x) x[1])
+	idx <- which(first_el == 0)
+	out_stack_ls_good <- out_stack_ls[idx]
+	
+	out_stack <- stack(out_stack_ls_good)
+	out_sum <- sum(out_stack)
+	moves_in_c <- raster::crop(out_sum, main_sabah_sp)
+	moves_in_m <- raster::mask(moves_in_c, main_sabah_sp)
+	moves_in_m2 <- raster::mask(moves_in_m, pa_sp, inverse = TRUE)
+	plot(moves_in_m2)
+	
+
+
+	m <- matrix(1, ncol=3, nrow=3)
+	moves_sm <- focal(moves_in_m2, m, fun="mean", na.rm=TRUE, NAonly=TRUE, pad=TRUE) 
+
+	
+
+	# ----------------------	
+	#  Save outputs of aggregating all spp and all simulations.
+	# writeRaster(moves_in, "C:/Users/saraw/Desktop/moves_in.grd")
+	
+
+	
+	
+	
+	
+	
+	
+
+	
+# =============================================================================
+#  Plot using RasterVis.
+# =============================================================================
+
+	# # ----------------------	
+	# #   Set color palette theme
+	r_theme <- rasterTheme(brewer.pal(10, "Reds"))
+	r_theme$regions$col <- c("grey","grey","grey","grey","grey", 
+		"lightgreen", "lightgreen", "lightgreen", "lightgreen", "lightgreen",
+		"black", "black", "black", "black", "black", 
+		"lightblue", "lightblue", "lightblue", "lightblue", "lightblue", 
+		"darkgreen", "darkgreen", "darkgreen", "darkgreen", "darkgreen")
+	r_theme <- rasterTheme(brewer.pal(5, "Reds"))
+	r_theme$panel.background$col <- "white"
+	
+	
+	# ----------------------	
+	plot_move_r <- levelplot(probrast, par.settings = r_theme, 
+		#main = "Probability of use during species movement \n",
+		#xlab= "Longitude (UTM)",
+		#ylab="Latitude (UTM)",
+		margin = FALSE) #+
+		#layer(sp.polygons(border_sabah_d, lwd = 0.8, col = 'grey40')) #+ 
+		#layer(sp.polygons(border_sarawak_d, lwd = 0.8, col = 'grey40', fill = 'gray40')) +
+		#layer(sp.polygons(border_kali_d, lwd = 0.8, col = 'grey40', fill = 'gray40')) #+
+	#	layer(sp.polygons(pa_sp, lwd = 0.8, col = 'grey40', fill = 'darkorange2')) 
+	plot_move_r
+	
+	
+
+# =============================================================================	
+###############################################################################

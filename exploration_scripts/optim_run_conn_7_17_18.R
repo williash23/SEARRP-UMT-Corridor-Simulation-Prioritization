@@ -36,9 +36,9 @@ library(gurobi)
 library(prioritizr)
 library(ggplot2)
 library(rasterVis)
-library(beepr)
+#library(beepr)
 
-options(digits = 10)
+#options(digits = 10)
 
 
 
@@ -54,11 +54,9 @@ options(digits = 10)
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/main_sabah_sf.Rdata")
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/main_ssk_sf.Rdata")
 	main_ssk_sp <- as(main_ssk_sf, "Spatial")
-	main_sabah_sp <- as(mainland_sabah_border, "Spatial")
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/mal_dan_bound.Rdata")
-	mal_dan_bound_sp <- as(mal_dan_bound, "Spatial")
+	main_sabah_sp <- as(main_sabah_sf, "Spatial")
 
-	
+
 	
 	# ----------------------
 	# Existing protected areas (both as individual PAs and clustered within 1 km).
@@ -66,14 +64,15 @@ options(digits = 10)
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/ssk_pa_near_sf_clust.Rdata")
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/ssk_pa_near_sf_clust_1k.Rdata")
 	pa_clust_sp <- as(ssk_pa_near_sf_clust_1k, 'Spatial')
-	pa_in_b <- st_buffer(ssk_pa_near_sf_clust_1k, 0.1) %>%
+	pa_in_b <- st_buffer(ssk_pa_near_sf_clust_1k, 1000) %>%
 		st_intersection(main_ssk_sf) %>%
 		mutate(size = as.integer(st_area(.)*0.0001))
 	
 	# ----------------------
 	#  Load study area grid that holds planning units for connectivity optimization.
-	load(fille = "C:/Users/saraw/Desktop/planning_unit_grids/sw_sabah_grid.Rdata")
-
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf.Rdata")
+	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf_25.Rdata")
+	
 	# ----------------------
 	#  Load forest area.
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/acd_agg_sf_for.Rdata")
@@ -98,6 +97,46 @@ options(digits = 10)
 		dplyr::filter(size > 26000)
 	pa_in_b_lg_sp <- as(pa_in_b_lg, 'Spatial')
 	pa_in_b_lg_r <- rasterize(pa_in_b_lg_sp, r_template, field = pa_in_b_lg_sp$group)
+	
+	# ----------------------
+	#  Rasterize existing protected areas according to this raster template.
+	pa_corr <- ssk_pa_near_sf%>%
+		st_intersection(main_ssk_sf) %>%
+		mutate(size = as.integer(st_area(.)*0.0001))
+	pa_corr_in1_tmp <- pa_corr %>%
+		#dplyr::filter(id >129 & id < 135)
+		dplyr::filter(id == 131 | id == 132 | id == 133) %>%
+		st_union()
+	pa_corr_in1_sp <- as(pa_corr_in1_tmp, "Spatial")
+	pa_corr_in1 <- st_as_sf(pa_corr_in1_sp)
+	pa_corr_in2 <- pa_corr %>%
+		dplyr::filter(id == 191) %>%
+		dplyr::select(geometry)
+	pa_corr_in3 <- pa_corr %>%
+		#dplyr::filter(id >185 & id < 199)
+		dplyr::filter(id == 195) %>%
+		dplyr::select(geometry)	
+	pa_corr_in <- rbind(pa_corr_in1, pa_corr_in2, pa_corr_in3) %>%
+		mutate(id = 1:n())
+	pa_corr_in_sp <- as(pa_corr_in, 'Spatial')
+	pa_corr_in_r <- rasterize(pa_corr_in_sp, r_template, field = pa_corr_in_sp$id)
+	wt_sm[wt_sm < 100] <- 200
+	#wt_in <- raster::mask(wt_sm, main_sabah_sp)
+	tr <- transition(wt_sm, transitionFunction = mean, directions = 8)
+	trc <- geoCorrection(tr, type="c", multpl=FALSE, scl=FALSE)
+	corr_pa_pts <- gCentroid(pa_corr_in_sp, byid = TRUE)
+	corr_1 <- shortestPath(trc, corr_pa_pts[1], corr_pa_pts[2], output="SpatialLines")
+	corr_2 <- shortestPath(trc, corr_pa_pts[2], corr_pa_pts[3], output="SpatialLines")
+	corr_3 <- shortestPath(trc, corr_pa_pts[1], corr_pa_pts[3], output="SpatialLines")
+
+	corr_1_sf <- st_as_sf(corr_1)
+	corr_2_sf <- st_as_sf(corr_2)
+	corr_3_sf <- st_as_sf(corr_3)
+	corr_in <- rbind(corr_2_sf, corr_3_sf) %>%
+		mutate(id = 1) %>%
+		st_buffer(3000)
+	corr_in_sp <- as(corr_in, "Spatial")
+	corr_in_r <- rasterize(corr_in_sp, r_template, field = corr_in_sp$id)
 	
 	# ----------------------	
 	#  Prep theme for plotting.
@@ -153,9 +192,10 @@ options(digits = 10)
 	#  Load connectivity information from weighting of each planning unit.	
 	pt_wt_r_rs <- raster::resample(pt_wt_r, moves_in)
 	wt_sm <- raster::focal(pt_wt_r_rs,  w = matrix(1/15, nrow = 15, ncol = 15), na.rm = TRUE)
-	x_min <- wt_sm@data@min
-	x_max <- wt_sm@data@max
-	wt_01 <- raster::calc(wt_sm, range01)
+	wt_m <- raster::mask(wt_sm, pa_in_b, inverse = TRUE)
+	x_min <- wt_m@data@min
+	x_max <- wt_m@data@max
+	wt_01 <- raster::calc(wt_m, range01)
 	
 	# ----------------------
 	#  Combine the two connectivity layers.
@@ -164,6 +204,8 @@ options(digits = 10)
 	x_min <- conn_in_tmp@data@min
 	x_max <- conn_in_tmp@data@max
 	conn_in <- raster::calc(conn_in_tmp, range01)
+	
+	conn_in <- stack(moves_in, wt_01_c)
 	
 
 	
@@ -176,7 +218,7 @@ options(digits = 10)
 	#  Set up area of each planning unit as cost.
 	const_cost_h <- 500
 
-	pu_sf_tmp <- sw_sabah_grid %>%
+	pu_sf_tmp <- sa_grid_sf %>%
 		mutate(area_tmp = st_area(.) * 0.0001) %>%
 		separate(area_tmp, sep = " ", c("area_h_tmp"), drop = TRUE) 
 	pu_sf_tmp$area_h_tmp <- as.numeric(pu_sf_tmp$area_h_tmp)
@@ -186,8 +228,8 @@ options(digits = 10)
 		dplyr::select(-area_h_tmp) %>%
 		dplyr::filter(area_h > 100)
 	pu_in <- as(pu_sf, "Spatial")
-	
-	
+
+
 	
 # =============================================================================
 #  Parameters for loop to solve prioritized connectivity iteratively.
@@ -199,7 +241,7 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Total area allocated
-	tot_h <- 300000
+	tot_h <- 400000
 	
 	# ----------------------
 	#  Number of iterations to run when you still haven't reached a 
@@ -213,7 +255,7 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Number of neighbors for each iteration
-	n_neigh <- 3
+	n_neigh <- 2
 	
 	# ----------------------
 	#  Number of neighbors for initial problem.
@@ -258,12 +300,8 @@ options(digits = 10)
 		# ----------------------
 		#  Set up initial problem.
 		p_init <- problem(x = pu_in, features = moves_in, cost_column = "const_cost") %>%
-			#add_min_set_objective() %>%
 			add_max_cover_objective(init_area) %>%
-			#add_relative_targets(init_target) %>%
-			add_boundary_penalties(0.0000002, 0.5) %>%
 			#add_neighbor_constraints(n_neigh_init) %>%
-			#add_contiguity_constraints() %>%
 			add_binary_decisions() %>%
 			add_gurobi_solver()
 
@@ -283,13 +321,13 @@ options(digits = 10)
 		# ----------------------
 		#  Buffer around solution to make a boundary of "local" area for next iteration of 
 		#   optimization.
-		bound <- st_buffer(st_union(s_1_sf), 20000) 
+		bound <- st_buffer(st_union(s_1_sf), 5000) 
 		bound_sp <- as(bound, "Spatial")
 		
 		# ----------------------
 		#  Constrain input raster for the next iteration to the same general area as the boundary
 		#   generated above.
-		local_r <- raster::mask(moves_in, bound_sp)
+		local_r <- raster::mask(conn_in, bound_sp)
 		conn_in_upd_1_01 <- local_r
 		
 		# ----------------------
@@ -317,7 +355,7 @@ options(digits = 10)
 			setdiff(end_pa_id[[1]], start_pa_id[[1]])) 
 		diff_pa_tst[is.nan(diff_pa_tst)] <- 0
 		
-		if(any(diff_pa_tst > 0) == FALSE){
+		#if(any(diff_pa_tst > 0) == FALSE){
 		
 			for(i in 2:niter_max_corr){
 			
@@ -336,11 +374,11 @@ options(digits = 10)
 				# ----------------------
 				#  Set up problem to add planning units to first planning unit selected.
 				p <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "area_h") %>%
-					add_max_features_objective(cur_area_h + (pu_area_h * 10) + wiggle_room) %>%
-					#add_min_set_objective() %>%
+					#add_max_features_objective(2100) %>%
+					add_min_set_objective() %>%
+					add_relative_targets(0.15 * i) %>%
 					add_boundary_penalties(0.0000002, 0.5) %>%
 					add_locked_in_constraints(locked_in) %>%
-					add_relative_targets(0.05*(i-1)) %>%
 					add_binary_decisions() %>%
 					add_gurobi_solver()
 				
@@ -398,7 +436,7 @@ options(digits = 10)
 				# ----------------------
 				#  Buffer around solution to make a boundary of "local" area for next iteration of 
 				#   optimization.
-				bound <- st_buffer(st_union(tmp14_sf), 20000)
+				bound <- st_buffer(st_union(tmp14_sf), 5000)
 				bound <- st_buffer(bound, 5)
 				bound_sp <- as(bound, "Spatial")
 				
@@ -435,11 +473,11 @@ options(digits = 10)
 				setdiff(end_pa_id[[i]], start_pa_id[[i]])) 
 				diff_pa_tst[is.nan(diff_pa_tst)] <- 0
 				
+				#if(any(diff_pa_tst > 0) == TRUE| nrow(tmp4) == nrow(tmp1)) {break}
 				}
 				
-				if(any(diff_pa_tst > 0) == TRUE| nrow(tmp4) == nrow(tmp1)) {break}
-				}
-		}
+				
+			#}
 			
 		j = 1
 		n_sol_steps[j] <- i		
@@ -459,7 +497,7 @@ options(digits = 10)
 	#while(tot_area_h < 50000){
 	#j = j + 1
 	
-	for(j in 2:5){
+	for(j in 2:40){
 		
 		# ----------------------
 		#  Re-initiate loop output holders
@@ -477,12 +515,11 @@ options(digits = 10)
 		#  Set up looped initial problem.
 		p_init_loop <- problem(x = pu_in, features = moves_in, cost_column = "const_cost") %>%
 			add_max_cover_objective(init_area) %>%
-			add_boundary_penalties(0.00000001, 0.5) %>%
 			add_locked_out_constraints(locked_out) %>%
 			add_binary_decisions() %>%
 			add_gurobi_solver()
-	
-		# ----------------------
+		
+			# ----------------------
 		#  Solve initial problem.
 		s_1_loop <- solve(p_init_loop)
 		s_1_loop_sf <- st_as_sf(s_1_loop) %>%
@@ -498,7 +535,7 @@ options(digits = 10)
 		# ----------------------
 		#  Buffer around solution to make a boundary of "local" area for next iteration of 
 		#   optimization.
-		bound <- st_buffer(st_union(s_1_loop_sf), 20000)
+		bound <- st_buffer(st_union(s_1_loop_sf), 5000)
 		bound_sp <- as(bound, "Spatial")
 		
 		# ----------------------
@@ -532,10 +569,12 @@ options(digits = 10)
 			setdiff(end_pa_id_loop[[1]], start_pa_id_loop[[1]])) 
 		diff_pa_tst_loop[is.nan(diff_pa_tst_loop)] <- 0
 			
-		if(any(diff_pa_tst_loop > 0) == FALSE){			
+		#if(any(diff_pa_tst_loop > 0) == FALSE){			
 		
 			for(k in 2:niter_max_corr){
 
+				#k = k + 1
+			
 				# ----------------------
 				#  Specify that planning units selected in initiation problem solution that should become 
 				#  "locked out" and not available for selection.
@@ -571,12 +610,11 @@ options(digits = 10)
 				#  Set up problem to add planning units to first planning unit selected.
 				p_loop <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "area_h") %>%
 					add_min_set_objective() %>%
-					add_boundary_penalties(0.000000001, 0.5) %>%
+					add_relative_targets(0.15 * k) %>%
+					add_boundary_penalties(0.0000002, 0.5) %>%
 					add_locked_in_constraints(locked_in) %>%
-					add_relative_targets(0.05*(i-1)) %>%
 					add_binary_decisions() %>%
 					add_gurobi_solver()
-				
 		
 				# ----------------------
 				#  Solve iteration problem.
@@ -670,7 +708,7 @@ options(digits = 10)
 					setdiff(end_pa_id_loop[[k]], start_pa_id_loop[[k]])) 
 				diff_pa_tst_loop[is.nan(diff_pa_tst_loop)] <- 0
 
-				if(any(diff_pa_tst_loop > 0) == TRUE | nrow(tmp4_loop) == nrow(tmp1_loop)) {break}
+				#if(any(diff_pa_tst_loop > 0) == TRUE | nrow(tmp4_loop) == nrow(tmp1_loop)) {break}
 				}
 			
 		n_sol_steps[j] <- k			
@@ -684,8 +722,8 @@ options(digits = 10)
 		tot_area_h <-  as.integer(sum(st_area(all_sol_sf))*0.0001)
 		}
 		
-	}
-	
+		
+		
 
 	
 	

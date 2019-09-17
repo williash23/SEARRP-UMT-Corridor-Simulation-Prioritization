@@ -40,7 +40,7 @@ library(smoothr)
 
 	# ----------------------
 	#  Load connectivity information from animal movement scenarios for template.
-	#spp_moves <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/move_sim/moves_in.grd")
+	moves_in <- raster("C:/Users/saraw/Desktop/moves_sm.grd")
 	
 	# ----------------------
 	#  Load study area grid that holds planning units for connectivity assessment.
@@ -48,7 +48,7 @@ library(smoothr)
 
 	# ----------------------
 	#  "Locked in" already existing protected areas.
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/ssk_pa_near_sf_clust_1k.Rdata")
+	load(file = "C:/Users/saraw/Documents/Prioritization/study_area_boundaries_and_pas/ssk_pa_near_sf_clust_1k.Rdata")
 	
 	
 	
@@ -76,14 +76,14 @@ library(smoothr)
 		st_intersection(st_set_crs(st_as_sf(as(raster::extent(231556, 751756, 400000, 783428), 
 		"SpatialPolygons")), st_crs(ssk_pa_near_sf_clust_1k))) %>%
 		mutate(size = as.integer(st_area(.)*0.0001)) %>%
-		dplyr::filter(size > 5000) %>%
-		mutate(new_id = row_number()) %>%
+		dplyr::filter(size > 6000) %>%
 		dplyr::select(-group)
 	
 	area_thresh <- units::set_units(100, km^2)	
 	pas_sf <- pas_sf_tmp %>%
 		drop_crumbs(area_thresh) %>%
-		st_buffer(100)
+		mutate(new_id = row_number()) %>%
+		st_buffer(10)
 
 	pas_sp  <- as(pas_sf, "Spatial")
 	
@@ -93,22 +93,15 @@ library(smoothr)
 #  Set up planning unit later and obtain centroids of each planning unit.
 # =============================================================================		
 	
-	# ----------------------
-	#  If using planning units: input which planning unit size is desired.
-	pu_sf <- sa_grid_sf
+	pts_tmp <- as.data.frame(coordinates(pu_r))
+	coordinates(pts_tmp) <- ~x+y
+	proj4string(pts_tmp) <- crs(pu_r)
+	pts <- raster::crop(pts_tmp, main_sabah_sp)
+	pu <- pts
+	pu_sf <- st_as_sf(pu) %>%
+		st_transform(st_crs(pas_sf))
 
-	# ----------------------
-	#  Convert to sp object.
-	pu <- as(pu_sf, "Spatial")	
 	
-	# ----------------------
-	#  Get centroids
-	pts <- as.data.frame(coordinates(r_template))
-	coordinates(pts) <- ~x+y
-	#pts <- gCentroid(pu, byid = TRUE)
-	pts_sf <- st_as_sf(pts)
-
-
 
 # =============================================================================
 #  Get distance (in meters) and ID of the closest PA to each planning unit.
@@ -116,20 +109,28 @@ library(smoothr)
 
 	# ----------------------
 	#  Get the distances (m) between each centroid and each PA.
-	all_pts_to_pa_dist <- as.data.frame(gDistance(pas_sp, pts,  byid = TRUE))
+	pu_to_pa_dist <- as.data.frame(gDistance(pas_sp, pu,  byid = TRUE))
 	
 	# ----------------------
 	#  Get the ID of the closest PA to each planning unit centroid.
-	near_1_pa_to_pts_id <- integer(length(pts))
-	for(i in 1:length(pts)){
-		near_1_pa_to_pts_id[i] <- pas_sp$new_id[which.min(gDistance(pas_sp, pts[i,], byid = TRUE))]
+	closest_pa_to_pu_id <- integer(length(pu))
+	for(i in 1:length(pu)){
+		pu_i_sf <- pu_sf[i, 1]
+		pu_i <- as(pu_i_sf, "Spatial")
+		closest_pa_to_pu_id[i] <- pas_sp$new_id[which.min(gDistance(pas_sp, pu_i, byid = TRUE))]
+		}
+
+	for(i in 1:length(pu)){
+		pu_i_sf <- pu_sf[i, 1]
+		pu_i <- as(pu_i_sf, "Spatial")
+		closest_pa_to_pu_id[i] <- pas_sp$new_id[which.min(gDistance(pas_sp, pu_i, byid = TRUE))]
 		}
 
 	# ----------------------
 	#  Get the distance (m) of the closest PA to each planning unit centroid.
-	near_1_pa_to_pts_dist <- as.data.frame(apply(gDistance(pts, pas_sp,  byid = TRUE), 2, min)) 
-	colnames(near_1_pa_to_pts_dist) <- "dist_to_1"
-	near_1_pa_to_pts_dist_v <- as.vector(near_1_pa_to_pts_dist[,1])
+	closest_pa_to_pu_dist <- as.data.frame(apply(gDistance(pu, pas_sp,  byid = TRUE), 2, min)) 
+	colnames(closest_pa_to_pu_dist ) <- "dist_to_1"
+	closest_pa_to_pu_dist_v <- as.vector(closest_pa_to_pu_dist[,1])
 
 
 	
@@ -141,41 +142,41 @@ library(smoothr)
 	#  Temporarily increase the distance of the closest PA to each planning unit (determined above) 
 	#   in order to select second closest PA. Increase to a distance larger that any distances between
 	#   planning units and PAs.
-	fake_dist <- max(all_pts_to_pa_dist) + 10000
+	fake_dist <- max(pu_to_pa_dist) + 10000
 
-	near_2_pa_to_pts_dist_m <- matrix(nrow = nrow(all_pts_to_pa_dist), ncol = ncol(all_pts_to_pa_dist))
-	for(i in 1:nrow(all_pts_to_pa_dist)){
-		tmp1 <- as.numeric(all_pts_to_pa_dist[i,])
-		tmp2 <- near_1_pa_to_pts_dist_v[i]
+	second_pa_to_pu_dist_m <- matrix(nrow = nrow(pu_to_pa_dist), ncol = ncol(pu_to_pa_dist))
+	for(i in 1:nrow(pu_to_pa_dist)){
+		tmp1 <- as.numeric(pu_to_pa_dist[i,])
+		tmp2 <- closest_pa_to_pu_dist_v[i]
 		find_same <- function(x){which(x == tmp2)}
 		tmp3 <- find_same(tmp1)
 		tmp4 <- tmp1
 		tmp4[tmp3] <- fake_dist
-		near_2_pa_to_pts_dist_m[i,] <- tmp4
+		second_pa_to_pu_dist_m[i,] <- tmp4
 		}
 	
 	# ----------------------
 	#  Get the distance (m) of the second closest PA to each planning unit centroid.
-	near_2_pa_to_pts_dist_tmp <- matrix(nrow = nrow(all_pts_to_pa_dist), ncol = 1)
-	for(i in 1:nrow(near_2_pa_to_pts_dist_m)){
-		tmp1 <- as.numeric(near_2_pa_to_pts_dist_m[i,])
+	second_pa_to_pu_dist_tmp <- matrix(nrow = nrow(pu_to_pa_dist), ncol = 1)
+	for(i in 1:nrow(second_pa_to_pu_dist_m)){
+		tmp1 <- as.numeric(second_pa_to_pu_dist_m[i,])
 		tmp2 <- min(tmp1)
-		near_2_pa_to_pts_dist_tmp[i,1] <- tmp2
+		second_pa_to_pu_dist_tmp[i,1] <- tmp2
 		}
 		
 	# ----------------------
 	#  Convert to data frame
-	near_2_pa_to_pts_dist <- as.data.frame(near_2_pa_to_pts_dist_tmp)
-	colnames(near_2_pa_to_pts_dist) <- "dist_to_2"
+	second_pa_to_pu_dist <- as.data.frame(second_pa_to_pu_dist_tmp)
+	colnames(second_pa_to_pu_dist) <- "dist_to_2"
 	
 	# ----------------------
 	#  Get the ID of the second closest PA to each planning unit centroid.
-	near_2_pa_to_pts_id <- integer(length(pts))
-	for(i in 1:length(pts)){
-		tmp1 <- as.vector(all_pts_to_pa_dist[i,])
-		tmp2 <- near_2_pa_to_pts_dist[i,]
+	second_pa_to_pu_id <- integer(length(pu))
+	for(i in 1:length(pu)){
+		tmp1 <- as.vector(pu_to_pa_dist[i,])
+		tmp2 <- second_pa_to_pu_dist[i,]
 		tmp3 <- which(tmp1 == tmp2)[1]
-		near_2_pa_to_pts_id[i] <- tmp3
+		second_pa_to_pu_id[i] <- tmp3
 		}
 
 		
@@ -186,13 +187,13 @@ library(smoothr)
 	
 	# ----------------------
 	#  Bind ID's and distances for closest PA and second closest PA.
-	near_1_pa_to_pts_df <- as.data.frame(cbind(near_1_pa_to_pts_id, near_1_pa_to_pts_dist))
-	near_2_pa_to_pts_df <- as.data.frame(cbind(near_2_pa_to_pts_id, near_2_pa_to_pts_dist))
+	closest_pa_to_pu_df <- as.data.frame(cbind(closest_pa_to_pu_id, closest_pa_to_pu_dist))
+	second_pa_to_pu_df <- as.data.frame(cbind(second_pa_to_pu_id, second_pa_to_pu_dist))
 	
 	# ----------------------
 	#  Bind each data frame generated above to planning unit sf object.
-	pts_sf_near_1_pa <- bind_cols(pts_sf, near_1_pa_to_pts_df) 
-	pts_sf_near_2_pa <- bind_cols(pts_sf, near_2_pa_to_pts_df) 
+	pu_sf_closest_pa <- bind_cols(pu_sf, closest_pa_to_pu_df) 
+	pu_sf_second_pa <- bind_cols(pu_sf, second_pa_to_pu_df) 
 	
 	# ----------------------
 	#  Select only the area, ID, and name columns from the PA sf object and scale the area of all PAs.
@@ -203,11 +204,11 @@ library(smoothr)
 	# ----------------------
 	#  Join each planing unit sf object, which now has the closest and second closest PA info attached
 	#   to it, to the PA sf objects by PA ID.
-	pts_sf_1 <- left_join(pts_sf_near_1_pa, pas_df, 
-			by = c("near_1_pa_to_pts_id" = "new_id")) %>%
+	pu_sf_1 <- left_join(pu_sf_closest_pa, pas_df, 
+			by = c("closest_pa_to_pu_id" = "new_id")) %>%
 		dplyr::rename(pa_1_area_h = size)
-	pts_sf_2 <- left_join(pts_sf_near_2_pa, pas_df, 
-			by = c("near_2_pa_to_pts_id" = "new_id")) %>%
+	pu_sf_2 <- left_join(pu_sf_second_pa, pas_df, 
+			by = c("second_pa_to_pu_id" = "new_id")) %>%
 		dplyr::rename(pa_2_area_h = size) 
 
 
@@ -218,9 +219,9 @@ library(smoothr)
 
 	# ----------------------
 	#  Create new column with calculate weight value.
-	pts_wt_sf_tmp <- bind_cols(pts_sf_1, pts_sf_2) %>%
-		mutate(dist_bt_near_pas_m = dist_to_1 + dist_to_2) %>%
-		mutate(inv_dist_bt_near_pas_log = 1/log(dist_bt_near_pas_m)) %>%
+	pu_wt_sf_tmp <- bind_cols(pu_sf_1, pu_sf_2) %>%
+		mutate(dist_bt_near_pas_km = (dist_to_1 + dist_to_2)/1000) %>%
+		mutate(inv_dist_bt_near_pas_log = 1/log(dist_bt_near_pas_km)) %>%
 		rowwise(.) %>%
 		mutate(larger_pa_h = max(pa_1_area_h,  pa_2_area_h)) %>%
 		mutate(larger_pa_log = log(larger_pa_h)) %>%
@@ -231,34 +232,34 @@ library(smoothr)
 	
 	# ----------------------
 	#  Recast as sf object.
-	pts_wt_sf_tmp2 <- pts_wt_sf_tmp %>%
+	pu_wt_sf_tmp2 <- pu_wt_sf_tmp %>%
 		st_as_sf(sf_column_name = "geometry")
 			
 	# ----------------------
 	#  Multiply be determined weights.
-	pts_wt_sf_tmp3 <- pts_wt_sf_tmp2 %>%
+	pu_wt_sf_tmp3 <- pu_wt_sf_tmp2 %>%
 		mutate(pu_wt =  (dist_wt*inv_dist_bt_near_pas_log) + 
 			(smaller_pa_wt*smaller_pa_log) + 
 			(larger_pa_wt*larger_pa_log))
 	
-	ssk_pa_buff <- st_buffer(ssk_pa_near_sf_clust_1k, 300)
+	#ssk_pa_buff <- st_buffer(ssk_pa_near_sf_clust_1k, 300)
 	
-	pts_wt_sf <- pts_wt_sf_tmp3 %>%
-		st_difference(ssk_pa_buff)
+	#pu_wt_sf <- pu_wt_sf_tmp3 %>%
+		#st_difference(ssk_pa_buff)
 	
 	# ----------------------	
 	#  Make a smaller data frame for saving and plotting and convert to sp object.
-	#pts_wt_sf_small <- pts_wt_sf %>%
-	pts_wt_sf_small <- pts_wt_sf_tmp3 %>%
+	#pu_wt_sf_small <- pu_wt_sf %>%
+	pu_wt_sf_small <- pu_wt_sf_tmp3 %>%
 		dplyr::select(pu_wt)
-	pts_wt_sp <- as(pts_wt_sf_small, "Spatial")
-	pts_wt_sf_plot <- st_as_sf(pts_wt_sp)
+	pu_wt_sp <- as(pu_wt_sf_small, "Spatial")
+	pu_wt_sf_plot <- st_as_sf(pu_wt_sp)
 	
 	# ----------------------	
 	#  Save sf and sp objects.
-	# save(pts_wt_sf, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pts_wt_sf.Rdata")
-	# save(pts_wt_sf_plot, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pts_wt_sf_plot.Rdata")
-	# save(pts_wt_sp, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pts_wt_sp.Rdata")
+	# save(pu_wt_sf, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_wt_sf.Rdata")
+	# save(pu_wt_sf_plot, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_wt_sf_plot.Rdata")
+	# save(pu_wt_sp, file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_wt_sp.Rdata")
 	
 	
 	
@@ -268,7 +269,7 @@ library(smoothr)
 	
 	# ----------------------
 	#  Load input from above if needed.
-	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pts_wt_sp.Rdata")
+	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_wt_sp.Rdata")
 	
 	# ----------------------
 	#  Create raster following template of study area (cell values are empty)
@@ -279,11 +280,11 @@ library(smoothr)
 
 	# ----------------------
 	#  Reformat as raster
-	pt_wt_r <- raster::rasterize(pts_wt_sp, r_template, field = pts_wt_sp$pu_wt, fun = modal, na.rm = TRUE)
+	pt_wt_r <- raster::rasterize(pu_wt_sp, r_template, field = pu_wt_sp$pu_wt, fun = modal, na.rm = TRUE)
 
 				# ----------------------	
 				#  Smooth using a focal window
-				# wt_smooth <- focal(pt_wt_r,  w = matrix(1, 3, 3), mean, na.rm = TRUE)
+				wt_smooth <- focal(pt_wt_r,  w = matrix(1, 9, 9), mean, na.rm = TRUE)
 		
 		
 	# ----------------------
@@ -369,7 +370,7 @@ library(smoothr)
 
 	# ----------------------
 	#  Reload weighted PA data if needed.
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pts_wt_sf.Rdata")
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_wt_sf.Rdata")
 	
 	# ----------------------
 	#  All protected areas in Sabah, Sarawak, and Kalimantan.
@@ -420,9 +421,9 @@ library(smoothr)
 	
 	# ----------------------
 	#  Scale weight planning units from 0 to 1.
-	x_min <-min(pts_wt_sf$pu_wt)
-	x_max <-max(pts_wt_sf$pu_wt)
-	pts_wt_sf_plot_sc <- pts_wt_sf %>%
+	x_min <-min(pu_wt_sf$pu_wt)
+	x_max <-max(pu_wt_sf$pu_wt)
+	pu_wt_sf_plot_sc <- pu_wt_sf %>%
 		mutate(wt_sc = (pu_wt - x_min)/(x_max - x_min))
 		
 	# ----------------------
@@ -431,8 +432,8 @@ library(smoothr)
 		geom_sf(data = border_sabah_sf, colour = "grey50", fill = "grey50", alpha = 0.7) +
 		geom_sf(data = border_sarawak_sf, colour = "grey50", fill = "grey80") +
 		geom_sf(data = border_kali_sf, colour = "grey50", fill = "grey80") +
-		#geom_sf(data = pts_wt_sf_plot, aes(colour = pu_wt), size = 2, alpha = 0.4) +
-		geom_sf(data = pts_wt_sf_plot_sc, aes(colour = wt_sc), alpha = 0.4) +
+		#geom_sf(data = pu_wt_sf_plot, aes(colour = pu_wt), size = 2, alpha = 0.4) +
+		geom_sf(data = pu_wt_sf_plot_sc, aes(colour = wt_sc), alpha = 0.4) +
 		scale_colour_distiller(type = "seq", palette = "Reds", direction = 1) +		
 		geom_sf(data = sabah_pa_sf, colour = "darkseagreen3", fill = "transparent") +
 		geom_sf(data =sarawak_pa_sf, colour = "darkseagreen4", fill = "transparent") +

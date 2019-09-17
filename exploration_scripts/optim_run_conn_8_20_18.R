@@ -30,15 +30,15 @@ library(sp)
 library(raster)
 library(dplyr)
 library(tidyr)
-# install.packages("C:/gurobi751/win64/R/gurobi_7.5-1.zip", repos = NULL)
+# install.packages("C:/gurobi801/win64/R/gurobi_8.0-1.zip", repos = NULL)
 library(gurobi)
 #devtools::install_github("prioritizr/priortizr")
 library(prioritizr)
 library(ggplot2)
-library(rasterVis)
-library(beepr)
+#library(rasterVis)
+#library(beepr)
 
-options(digits = 10)
+#options(digits = 10)
 
 
 
@@ -55,10 +55,8 @@ options(digits = 10)
 	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/main_ssk_sf.Rdata")
 	main_ssk_sp <- as(main_ssk_sf, "Spatial")
 	main_sabah_sp <- as(main_sabah_sf, "Spatial")
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/mal_dan_bound.Rdata")
-	mal_dan_bound_sp <- as(mal_dan_bound, "Spatial")
 
-	
+
 	
 	# ----------------------
 	# Existing protected areas (both as individual PAs and clustered within 1 km).
@@ -72,7 +70,7 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Load study area grid that holds planning units for connectivity optimization.
-	load(file = "C:/Users/saraw/Documents/Prioritization/planning_unit_grids/sa_grid_sf.Rdata")
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf.Rdata")
 	#load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/sa_grid_sf_25.Rdata")
 	
 	# ----------------------
@@ -87,7 +85,7 @@ options(digits = 10)
 
 	# ----------------------
 	#  Create raster following template of study area (cell values are empty)
-	pt_wt_r <- raster("C:/Users/saraw/Documents/Prioritization/feature_prep/pt_wt_r.grd")
+	pt_wt_r <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pt_wt_r.grd")
 	r_mat <- matrix(0, nrow(pt_wt_r), ncol(pt_wt_r))
 	r_template <- raster(r_mat)
 	extent(r_template) <- extent(pt_wt_r)
@@ -100,7 +98,46 @@ options(digits = 10)
 	pa_in_b_lg_sp <- as(pa_in_b_lg, 'Spatial')
 	pa_in_b_lg_r <- rasterize(pa_in_b_lg_sp, r_template, field = pa_in_b_lg_sp$group)
 	
+	# ----------------------
+	#  Rasterize existing protected areas according to this raster template.
+	pa_corr <- ssk_pa_near_sf%>%
+		st_intersection(main_ssk_sf) %>%
+		mutate(size = as.integer(st_area(.)*0.0001))
+	pa_corr_in1_tmp <- pa_corr %>%
+		#dplyr::filter(id >129 & id < 135)
+		dplyr::filter(id == 131 | id == 132 | id == 133) %>%
+		st_union()
+	pa_corr_in1_sp <- as(pa_corr_in1_tmp, "Spatial")
+	pa_corr_in1 <- st_as_sf(pa_corr_in1_sp)
+	pa_corr_in2 <- pa_corr %>%
+		dplyr::filter(id == 191) %>%
+		dplyr::select(geometry)
+	pa_corr_in3 <- pa_corr %>%
+		#dplyr::filter(id >185 & id < 199)
+		dplyr::filter(id == 195) %>%
+		dplyr::select(geometry)	
+	pa_corr_in <- rbind(pa_corr_in1, pa_corr_in2, pa_corr_in3) %>%
+		mutate(id = 1:n())
+	pa_corr_in_sp <- as(pa_corr_in, 'Spatial')
+	pa_corr_in_r <- rasterize(pa_corr_in_sp, r_template, field = pa_corr_in_sp$id)
+	wt_sm[wt_sm < 100] <- 200
+	#wt_in <- raster::mask(wt_sm, main_sabah_sp)
+	tr <- transition(wt_sm, transitionFunction = mean, directions = 8)
+	trc <- geoCorrection(tr, type="c", multpl=FALSE, scl=FALSE)
+	corr_pa_pts <- gCentroid(pa_corr_in_sp, byid = TRUE)
+	corr_1 <- shortestPath(trc, corr_pa_pts[1], corr_pa_pts[2], output="SpatialLines")
+	corr_2 <- shortestPath(trc, corr_pa_pts[2], corr_pa_pts[3], output="SpatialLines")
+	corr_3 <- shortestPath(trc, corr_pa_pts[1], corr_pa_pts[3], output="SpatialLines")
 
+	corr_1_sf <- st_as_sf(corr_1)
+	corr_2_sf <- st_as_sf(corr_2)
+	corr_3_sf <- st_as_sf(corr_3)
+	corr_in <- rbind(corr_2_sf, corr_3_sf) %>%
+		mutate(id = 1) %>%
+		st_buffer(3000)
+	corr_in_sp <- as(corr_in, "Spatial")
+	corr_in_r <- rasterize(corr_in_sp, r_template, field = corr_in_sp$id)
+	
 	# ----------------------	
 	#  Prep theme for plotting.
 	r_theme <- rasterTheme(brewer.pal(9, "Reds"))
@@ -144,20 +181,21 @@ options(digits = 10)
 	# ----------------------	
 	#  Function to normalize rasters to 0 to 1 scale.
 	range01 <- function(x){(x-x_min)/(x_max - x_min)}
-	
+
 	# ----------------------
 	#  Load connectivity information from animal movement scenarios.
-	moves_in_tmp <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/move_sim/moves_in/1000sim_3000steps_init_loc_wt_pa_size_over5000h_turn_conc80_lg_area/moves_in_sm.grd")
+	moves_in_tmp <- raster("C:/Users/saraw/Documents/SEARRP_Analyses/conn_move_sim/moves_in/1000sim_3000steps_init_loc_wt_pa_size_over5000h_turn_conc80_lg_area/moves_in.grd")
 	moves_in <- raster::crop(moves_in_tmp, main_sabah_sp)
 	#conn_in <- moves_in
 	
 	# ----------------------
 	#  Load connectivity information from weighting of each planning unit.	
 	pt_wt_r_rs <- raster::resample(pt_wt_r, moves_in)
-	wt_sm <- raster::focal(pt_wt_r_rs,  w = matrix(1/15, nrow = 15, ncol = 15), na.rm = TRUE)
-	x_min <- wt_sm@data@min
-	x_max <- wt_sm@data@max
-	wt_01 <- raster::calc(wt_sm, range01)
+	#wt_sm <- raster::focal(pt_wt_r_rs,  w = matrix(1/15, nrow = 15, ncol = 15), na.rm = TRUE)
+	wt_m <- raster::mask(wt_sm, pa_in_b, inverse = TRUE)
+	x_min <- wt_m@data@min
+	x_max <- wt_m@data@max
+	wt_01 <- raster::calc(wt_m, range01)
 	
 	# ----------------------
 	#  Combine the two connectivity layers.
@@ -167,8 +205,14 @@ options(digits = 10)
 	x_max <- conn_in_tmp@data@max
 	conn_in <- raster::calc(conn_in_tmp, range01)
 	
-
+	conn_in <- stack(moves_in, wt_01_c)
 	
+	conn_in_tmp <- overlay(moves_in, pt_wt_r_01, fun=function(x, y, na.rm = TRUE) {return(x + y)})
+	x_min <- conn_in_tmp@data@min
+	x_max <- conn_in_tmp@data@max
+	conn_in <- raster::calc(conn_in_tmp, range01)
+	
+	conn_in <- stack(moves_in, pt_wt_r)
 	
 # =============================================================================
 #  Define planning units.
@@ -176,10 +220,20 @@ options(digits = 10)
 
 	# ----------------------
 	#  Set up area of each planning unit as cost.
-	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/pu_in_sf.Rdata")
-	pu_in <- as(pu_in_sf, "Spatial")
+	const_cost_h <- 500
 
-	
+	pu_sf_tmp <- sa_grid_sf %>%
+		mutate(area_tmp = st_area(.) * 0.0001) %>%
+		separate(area_tmp, sep = " ", c("area_h_tmp"), drop = TRUE) 
+	pu_sf_tmp$area_h_tmp <- as.numeric(pu_sf_tmp$area_h_tmp)
+	pu_sf <- pu_sf_tmp %>%
+		mutate(area_h = ifelse(area_h_tmp < 1, 1, area_h_tmp)) %>%
+		mutate(const_cost = const_cost_h) %>%
+		dplyr::select(-area_h_tmp) %>%
+		dplyr::filter(area_h > 100)
+	pu_in <- as(pu_sf, "Spatial")
+
+
 	
 # =============================================================================
 #  Parameters for loop to solve prioritized connectivity iteratively.
@@ -191,7 +245,7 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Total area allocated
-	tot_h <- 300000
+	tot_h <- 400000
 	
 	# ----------------------
 	#  Number of iterations to run when you still haven't reached a 
@@ -205,7 +259,7 @@ options(digits = 10)
 	
 	# ----------------------
 	#  Number of neighbors for each iteration
-	n_neigh <- 3
+	n_neigh <- 2
 	
 	# ----------------------
 	#  Number of neighbors for initial problem.
@@ -218,6 +272,7 @@ options(digits = 10)
 	# ----------------------
 	#  Area of coverage for initial problems.
 	init_area <- pu_area_h * (n_neigh_init + 3) + wiggle_room
+	#init_area <- pu_area_h  + wiggle_room
 	
 	# ----------------------
 	#  Area of increase for each iteration: must put this formula in the problem 
@@ -249,8 +304,9 @@ options(digits = 10)
 		# ----------------------
 		#  Set up initial problem.
 		p_init <- problem(x = pu_in, features = moves_in, cost_column = "const_cost") %>%
-			add_max_cover_objective(init_area) %>%
-			add_neighbor_constraints(n_neigh_init) %>%
+			add_max_features_objective(600) %>%
+			add_relative_targets(0.5/cellStats(moves_in, stat='sum')) %>%
+			#add_neighbor_constraints(1) %>%
 			add_binary_decisions() %>%
 			add_gurobi_solver()
 
@@ -270,7 +326,7 @@ options(digits = 10)
 		# ----------------------
 		#  Buffer around solution to make a boundary of "local" area for next iteration of 
 		#   optimization.
-		bound <- st_buffer(st_union(s_1_sf), 20000) 
+		bound <- st_buffer(st_union(s_1_sf), 5000) 
 		bound_sp <- as(bound, "Spatial")
 		
 		# ----------------------
@@ -290,12 +346,13 @@ options(digits = 10)
 		
 		# ----------------------
 		#  Check if the solution resulted in a full corridor from one planning unit to another.
-		start_pu_sp <- as(s_1_sf, "Spatial")
+		start_pu_sp <- s_1_sp
 		start_pa_tmp <- raster::extract(pa_in_b_lg_r, start_pu_sp) 
 		start_pa <- unlist(lapply(start_pa_tmp, function(x) if (!is.null(x)) mean(x, na.rm=TRUE) else NA ))
-		start_pa_id[[1]] <- start_pa
+		start_pa_id[[1]] <- ifelse(start_pa == "NaN", NA, start_pa)
+		#start_pa_id[[1]] <- start_pa_tmp[[1]][1]
 		
-		end_pu_sp <- as(s_1_sf, "Spatial")
+		end_pu_sp <- s_1_sp
 		end_pa_tmp <- raster::extract(pa_in_b_lg_r, end_pu_sp) 
 		end_pa <- unlist(lapply(end_pa_tmp, function(x) if (!is.null(x)) mean(x, na.rm=TRUE) else NA ))
 		end_pa_id[[1]] <- end_pa
@@ -304,7 +361,7 @@ options(digits = 10)
 			setdiff(end_pa_id[[1]], start_pa_id[[1]])) 
 		diff_pa_tst[is.nan(diff_pa_tst)] <- 0
 		
-		#if(any(diff_pa_tst > 0) == FALSE){
+		if(any(diff_pa_tst > 0) == FALSE){
 		
 			for(i in 2:niter_max_corr){
 			
@@ -322,10 +379,12 @@ options(digits = 10)
 				
 				# ----------------------
 				#  Set up problem to add planning units to first planning unit selected.
-				p <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "area_h") %>%
-					add_max_cover_objective(cur_area_h + (pu_area_h * (n_neigh + 3)) + wiggle_room) %>%
-					add_neighbor_constraints(n_neigh) %>%
-					add_locked_in_constraints(locked_in) %>%
+				p <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "const_cost") %>%
+					add_max_cover_objective(1200) %>%
+					#add_min_set_objective() %>%
+					#add_relative_targets(1/cellStats(moves_in, stat='sum')) %>%
+					#add_boundary_penalties(0.0000002, 0.5) %>%
+					#add_locked_in_constraints(locked_in) %>%
 					add_binary_decisions() %>%
 					add_gurobi_solver()
 				
@@ -383,7 +442,7 @@ options(digits = 10)
 				# ----------------------
 				#  Buffer around solution to make a boundary of "local" area for next iteration of 
 				#   optimization.
-				bound <- st_buffer(st_union(tmp14_sf), 20000)
+				bound <- st_buffer(st_union(tmp14_sf), 5000)
 				bound <- st_buffer(bound, 5)
 				bound_sp <- as(bound, "Spatial")
 				
@@ -420,11 +479,10 @@ options(digits = 10)
 				setdiff(end_pa_id[[i]], start_pa_id[[i]])) 
 				diff_pa_tst[is.nan(diff_pa_tst)] <- 0
 				
-				#if(any(diff_pa_tst > 0) == TRUE| nrow(tmp4) == nrow(tmp1)) {break}
+				if(any(diff_pa_tst > 0) == TRUE| nrow(tmp4) == nrow(tmp1)) {break}
 				}
 				
-				
-			#}
+			}
 			
 		j = 1
 		n_sol_steps[j] <- i		
@@ -461,17 +519,12 @@ options(digits = 10)
 		# ----------------------
 		#  Set up looped initial problem.
 		p_init_loop <- problem(x = pu_in, features = moves_in, cost_column = "const_cost") %>%
-			#add_min_set_objective() %>%
 			add_max_cover_objective(init_area) %>%
-			#add_relative_targets(init_target) %>%
 			add_locked_out_constraints(locked_out) %>%
-			#add_boundary_penalties(penalty = 500, edge_factor = 0.5) %>%
-			#add_contiguity_constraints() %>%
-			add_neighbor_constraints(n_neigh_init) %>%
 			add_binary_decisions() %>%
 			add_gurobi_solver()
-	
-		# ----------------------
+		
+			# ----------------------
 		#  Solve initial problem.
 		s_1_loop <- solve(p_init_loop)
 		s_1_loop_sf <- st_as_sf(s_1_loop) %>%
@@ -487,7 +540,7 @@ options(digits = 10)
 		# ----------------------
 		#  Buffer around solution to make a boundary of "local" area for next iteration of 
 		#   optimization.
-		bound <- st_buffer(st_union(s_1_loop_sf), 20000)
+		bound <- st_buffer(st_union(s_1_loop_sf), 5000)
 		bound_sp <- as(bound, "Spatial")
 		
 		# ----------------------
@@ -561,12 +614,9 @@ options(digits = 10)
 				# ----------------------
 				#  Set up problem to add planning units to first planning unit selected.
 				p_loop <- problem(x = upd_pu_tmp, features = upd_feat_tmp, cost_column = "area_h") %>%
-					add_max_cover_objective(cur_area_h + (pu_area_h * (n_neigh + 3)) + wiggle_room) %>%
-					#add_min_set_objective() %>%
-					#add_relative_targets(area_inc*i) %>%
-					add_neighbor_constraints(n_neigh) %>%
-					#add_contiguity_constraints() %>%
-					#add_boundary_penalties(penalty = 100, edge_factor = 0.5) %>%
+					add_min_set_objective() %>%
+					add_relative_targets(0.15 * k) %>%
+					add_boundary_penalties(0.0000002, 0.5) %>%
 					add_locked_in_constraints(locked_in) %>%
 					add_binary_decisions() %>%
 					add_gurobi_solver()
@@ -720,8 +770,8 @@ options(digits = 10)
 	
 	
 	
-	#  Reload solution if needed
-	load(file = "C:/Users/saraw/Documents/Prioritization/conn_move_sim/conn_optim_out/Final/all_sol_sf.Rdata")
+	
+	load(file = "C:/Users/saraw/Documents/SEARRP_Analyses/optimization/conn_optim_out/Final/all_sol_sf.Rdata")
 	 
 	 
 	# ----------------------
@@ -743,13 +793,37 @@ options(digits = 10)
 		mutate(scenario_r = (n()+1) + desc(scenario_new))
 		
 	# ----------------------
+	#  Plot selected corridors.
+	corr_p <- ggplot() +
+		geom_sf(data = border_sabah_sf, colour = "grey50", fill = "grey50", alpha = 0.7) +
+		geom_sf(data = border_sarawak_sf, colour = "grey50", fill = "grey80") +
+		geom_sf(data = border_kali_sf, colour = "grey50", fill = "grey80") +
+		geom_sf(data = acd_agg_sf_for, colour = "#1B792F", fill = "#1B792F", alpha = 0.3) +
+		#geom_sf(data = sa_grid_sf, colour = "transparent", fill = "grey90") +
+		geom_sf(data = corr_scen_sf,  aes(fill = factor(scenario_new))) +
+		scale_fill_brewer(type = "seq", palette = "Reds", direction = -1) +
+		geom_sf(data = pa_in_b, fill = "darkorange3", colour = "transparent") +
+		coord_sf(crs = st_crs(32650)) +
+		xlab("Latitude") +
+		ylab("Longitude") +
+		xlim(315000, 755000) +
+		ylim(455000, 815000) +
+		theme_bw()
+	corr_p
+	
+	# ----------------------
 	#  Covert to raster for feature input.
 	corr_r <- rasterize(corr_scen_sf, r_template, field = corr_scen_sf$scenario, background = 0)
-	corr_sm <- focal(corr_r,  w = matrix(1, 21, 21))	
-	corr_sm[corr_sm == 0] <- NA
+	corr_r[corr_r == 6] <- 0
+	 corr_r[corr_r == 5] <- 0
+	#corr_sm <- focal(corr_r,  w = matrix(1, 21, 21))	
+	corr_sm <- corr_r
+	#corr_sm[corr_sm == 0] <- NA
+	x_min <- corr_sm@data@min
+	x_max <- corr_sm@data@max
+	corr_out_r <- raster::calc(corr_sm, range01)
 	
-	#writeRaster(corr_sm, "C:/Users/saraw/Documents/Prioritization/feature_prep/corr_sm.grd")
-	
+	#writeRaster(corr_out_r, "C:/Users/saraw/Desktop/tmp/corr_out_r_small.grd")
 	
 	# ----------------------	
 	#  Plot raster.
