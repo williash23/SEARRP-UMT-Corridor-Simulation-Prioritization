@@ -284,7 +284,7 @@ setwd("C:/Users/saraw/Documents/Prioritization/")
 					}
 			
 			# ----------------------
-			#  Select only the last step for dispersers ending location
+			#  Select only through last step for dispersers ending location
 			sim_move_df_fin <- sim_move_df_tmp[1:end_step,]
 			sim_move_sf <- st_as_sf(sim_move_df_fin, sf_column_name = "geometry")
 			st_crs(sim_move_sf) = 32650
@@ -365,12 +365,16 @@ setwd("C:/Users/saraw/Documents/Prioritization/")
 		paths_ln_sf_wt <- st_as_sf(paths_ln_wt, sf_column_name = "geometry.y")
 		st_crs(paths_ln_sf_wt) = 32650
 		paths_po_sf_wt <- st_buffer(paths_ln_sf_wt, 1000)
-		
-		corr_sim_r <- fasterize(paths_po_sf_wt, r_template, field = "path_wt_ln", fun="sum")
+		paths_pt_sf_wt <- paths_ln_sf_wt %>% 
+			st_cast("POINT") %>% 
+			dplyr::select(val = path_wt_ln)
+				
+		#corr_sim_r <- fasterize(paths_po_sf_wt, r_template, field = "path_wt_ln", fun = "sum")
+		corr_sim_r <- rasterize(paths_pt_sf_wt, r_template, field = "val", fun = "sum")
 		plot(corr_sim_r)		
 	
 		m <- matrix(1, ncol=5, nrow=5)
-		corr_sim_sm <- focal(corr_sim_m, m, fun="mean", na.rm=TRUE, pad=TRUE) 
+		corr_sim_sm <- focal(corr_sim_r, m, fun="mean", na.rm=TRUE, pad=TRUE) 
 		plot(corr_sim_sm)
 	
 		corr_sim_c <- raster::crop(corr_sim_sm, pu_r)
@@ -378,7 +382,7 @@ setwd("C:/Users/saraw/Documents/Prioritization/")
 		corr_sim_m_tmp <- raster::mask(corr_sim_rs, pu_r)
 		corr_sim_m <- raster::mask(corr_sim_m_tmp, pa_sp, inverse = TRUE)
 		plot(corr_sim_m)
-		#writeRaster(corr_sim_m, file = "corr_sim_m.tif")
+		#writeRaster(corr_sim_m, file = "corr_sim_m_20192014.tif")
 		
 		
 		
